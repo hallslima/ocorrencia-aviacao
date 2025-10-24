@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-# import json # Removido - Não precisamos mais para o mapa
+import json
+import re # Importar a biblioteca de expressões regulares
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -10,279 +11,261 @@ st.set_page_config(
 )
 
 # --- 2. CARREGAR E PREPARAR OS DADOS (EM CACHE) ---
-# Esta função é executada apenas uma vez para carregar e limpar todos os dados.
 @st.cache_data
 def load_data():
     """Carrega, limpa e pré-processa os arquivos CSV do CENIPA."""
     try:
-        # Definir valores que serão tratados como Nulos
-        na_values = ['***', 'NULL', 'NA', 'N/A', '']
-        encoding_type = 'windows-1252' 
-        
-        # Carregar os arquivos CSV necessários
+        na_values = ['***', 'NULL', 'NA', 'N/A', '', '****']
+        encoding_type = 'windows-1252'
+
+        # Carregar arquivos CSV
         df_ocorrencia = pd.read_csv('data/ocorrencia.csv', sep=';', na_values=na_values, low_memory=False, encoding=encoding_type)
         df_aeronave = pd.read_csv('data/aeronave.csv', sep=';', na_values=na_values, low_memory=False, encoding=encoding_type)
         df_fator = pd.read_csv('data/fator_contribuinte.csv', sep=';', na_values=na_values, low_memory=False, encoding=encoding_type)
         df_tipo = pd.read_csv('data/ocorrencia_tipo.csv', sep=';', na_values=na_values, low_memory=False, encoding=encoding_type)
-        df_recomendacao = pd.read_csv('data/recomendacao.csv', sep=';', na_values=na_values, low_memory=False, encoding=encoding_type) 
-        
-        # --- Limpeza e Processamento ---
-        
-        # 1. Tabela OCORRÊNCIA
+        df_recomendacao = pd.read_csv('data/recomendacao.csv', sep=';', na_values=na_values, low_memory=False, encoding=encoding_type)
+
+        # --- Limpeza Padrão ---
         df_ocorrencia['ocorrencia_dia'] = pd.to_datetime(df_ocorrencia['ocorrencia_dia'], dayfirst=True, errors='coerce')
         df_ocorrencia['ocorrencia_ano'] = df_ocorrencia['ocorrencia_dia'].dt.year
-        df_ocorrencia = df_ocorrencia.dropna(subset=['ocorrencia_ano', 'ocorrencia_uf'])
+
+        # Limpeza simplificada das coordenadas
+        def clean_coord(coord_str):
+            if pd.isna(coord_str): return None
+            try:
+                cleaned_stage1 = str(coord_str).replace(',', '.').strip()
+                match = re.search(r"(-?\d+(\.\d+)?)", cleaned_stage1)
+                if match:
+                    val = float(match.group(1))
+                    if -180 <= val <= 180: return val
+                return None
+            except: return None
+
+        df_ocorrencia['latitude'] = df_ocorrencia['ocorrencia_latitude'].apply(clean_coord)
+        df_ocorrencia['longitude'] = df_ocorrencia['ocorrencia_longitude'].apply(clean_coord)
+
+        # Filtrar faixa Brasil e remover NAs essenciais
+        df_ocorrencia = df_ocorrencia[
+            (df_ocorrencia['latitude'].between(-34, 6, inclusive='both')) &
+            (df_ocorrencia['longitude'].between(-74, -34, inclusive='both'))
+        ]
+        df_ocorrencia = df_ocorrencia.dropna(subset=['ocorrencia_ano', 'ocorrencia_uf', 'latitude', 'longitude'])
         df_ocorrencia['ocorrencia_ano'] = df_ocorrencia['ocorrencia_ano'].astype(int)
-        
-        # 2. Tabela AERONAVE
+
         df_aeronave['aeronave_fatalidades_total'] = pd.to_numeric(df_aeronave['aeronave_fatalidades_total'], errors='coerce').fillna(0)
         df_aeronave['aeronave_registro_segmento'] = df_aeronave['aeronave_registro_segmento'].fillna('INDETERMINADO')
         df_aeronave['aeronave_fase_operacao'] = df_aeronave['aeronave_fase_operacao'].fillna('INDETERMININA')
 
-        # 3. Tabela FATOR
         df_fator = df_fator.dropna(subset=['fator_area'])
-        
-        # 4. Tabela TIPO
         df_tipo = df_tipo.dropna(subset=['ocorrencia_tipo'])
-        
-        # 5. Tabela RECOMENDAÇÃO
         df_recomendacao['recomendacao_status'] = df_recomendacao['recomendacao_status'].fillna('INDETERMINADO')
-        
-        # REMOVIDO: Carregamento e enriquecimento do GeoJSON
 
-        # Retornar um dicionário com os DataFrames limpos
+        # Carregar o arquivo GeoJSON para o mapa base
+        try:
+            with open('data/br_states.json', 'r') as f:
+                geojson_br = json.load(f)
+        except FileNotFoundError:
+            st.error("Arquivo 'data/br_states.json' não encontrado. Necessário para o mapa base.")
+            return None
+
+        # Retornar dicionário
         return {
             "ocorrencia": df_ocorrencia,
             "aeronave": df_aeronave,
             "fator": df_fator,
             "tipo": df_tipo,
-            "recomendacao": df_recomendacao
-            # "geojson_br_enriquecido": geojson_br # Removido
+            "recomendacao": df_recomendacao,
+            "geojson_br": geojson_br
         }
 
+    # Tratamento de erros
     except FileNotFoundError as e:
-        st.error(f"Erro ao carregar os dados. Verifique se o arquivo CSV está no local correto (pasta 'data/'). Detalhe: {e}")
+        st.error(f"Erro: Arquivo CSV não encontrado. Verifique 'data/'. Detalhe: {e}")
         return None
     except UnicodeDecodeError:
-        st.error(f"Erro de codificação (Encoding). Tente alterar o 'encoding_type' na função load_data() para 'latin-1' ou 'utf-8'.")
+        st.error("Erro de codificação (Encoding). Tente 'latin-1' ou 'utf-8'.")
         return None
-    except Exception as e: # Captura outros erros
-        st.error(f"Ocorreu um erro inesperado durante o carregamento/processamento: {e}")
+    except Exception as e:
+        st.error(f"Erro inesperado no load_data: {e}")
         return None
 
 
 # Carregar os dados
 data_dict = load_data()
+if data_dict is None: st.stop()
 
-# Se os dados não forem carregados, interrompe o app
-if data_dict is None:
-    st.stop()
-
-# Desempacotar os dados para facilitar o uso
+# Desempacotar
 df_ocorrencia = data_dict['ocorrencia']
 df_aeronave = data_dict['aeronave']
 df_fator = data_dict['fator']
 df_tipo = data_dict['tipo']
 df_recomendacao = data_dict['recomendacao']
-# geojson_br_enriquecido = data_dict['geojson_br_enriquecido'] # Removido
+geojson_br = data_dict['geojson_br']
 
 # --- 3. SEÇÃO 1: TÍTULO E PANORAMA GERAL ---
 st.title("Decolando com Segurança: Onde Reside o Risco Aéreo no Brasil?")
-st.warning(
-    "**Problemática:** Onde realmente reside o maior risco na aviação civil brasileira? "
-    "Nossa análise investiga se o perigo está nas **Máquinas** (falhas mecânicas) ou no **Fator Humano** (decisões e operações)."
-)
+st.warning("**Problemática:** Onde está o maior risco na aviação civil? **Máquinas** ou **Fator Humano**?")
+st.header("Seção 1: Panorama Geral das Ocorrências")
+st.markdown("Contexto geral: volume e gravidade.")
 
-st.header("Seção 1: O Panorama Geral das Ocorrências")
-st.markdown("Primeiro, vamos entender o contexto. Quantas ocorrências temos e qual a gravidade delas?")
-
-# Calcular o novo KPI
 total_acidentes = df_ocorrencia[df_ocorrencia['ocorrencia_classificacao'] == 'ACIDENTE'].shape[0]
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric("Total de Ocorrências (Geral)", f"{df_ocorrencia.shape[0]:,}", help="Soma de Acidentes, Incidentes Graves e Incidentes.")
+kpi2.metric("Total de ACIDENTES", f"{total_acidentes:,}", help="Ocorrências com dano substancial ou lesões graves/fatais.")
+kpi3.metric("Total de Fatalidades", f"{int(df_aeronave['aeronave_fatalidades_total'].sum()):,}", help="Fatalidades em todos os acidentes.")
 
-# KPIs da Seção 1 (Linha 1)
-kpi1, kpi2, kpi3 = st.columns(3) 
-kpi1.metric(
-    "Total de Ocorrências (Geral)",
-    f"{df_ocorrencia.shape[0]:,}",
-    help="Soma de todos os eventos: Acidentes, Incidentes Graves e Incidentes."
-)
-kpi2.metric(
-    "Total de ACIDENTES",
-    f"{total_acidentes:,}",
-    help="Ocorrências com dano substancial à aeronave ou lesões graves/fatais."
-)
-kpi3.metric(
-    "Total de Fatalidades",
-    f"{int(df_aeronave['aeronave_fatalidades_total'].sum()):,}",
-    help="Número total de fatalidades registradas em todos os acidentes."
-)
-
-# Gráfico de Classificação e Definições (Linha 2)
 col_grafico, col_definicoes = st.columns(2)
-
 with col_grafico:
-    # Gráfico de BARRAS para Classificação
     classificacao_data = df_ocorrencia['ocorrencia_classificacao'].value_counts().reset_index()
     chart_classif = alt.Chart(classificacao_data).mark_bar().encode(
-        x=alt.X('ocorrencia_classificacao', title='Classificação', sort='-y'), 
-        y=alt.Y('count', title='Nº de Ocorrências'),
-        color=alt.Color('ocorrencia_classificacao', title="Classificação"),
-        tooltip=['ocorrencia_classificacao', 'count']
-    ).properties(
-        title="Ocorrências por Classificação"
-    )
+        x=alt.X('ocorrencia_classificacao', title='Classificação', sort='-y'), y=alt.Y('count', title='Nº de Ocorrências'),
+        color=alt.Color('ocorrencia_classificacao', title="Classificação"), tooltip=['ocorrencia_classificacao', 'count']
+    ).properties(title="Ocorrências por Classificação")
     st.altair_chart(chart_classif, use_container_width=True)
-
 with col_definicoes:
-    # Adicionar um espaço para alinhar verticalmente com o título do gráfico
-    st.markdown("<br/>", unsafe_allow_html=True) 
-    
-    # Definições
-    with st.expander("Definições oficiais de 'Acidente', 'Incidente Grave' e 'Incidente'", expanded=True):
-        st.markdown(
-            """
-            De acordo com as normas do CENIPA (baseadas na legislação brasileira e no Anexo 13 da ICAO), as classificações significam:
+    st.markdown("<br/>", unsafe_allow_html=True)
+    with st.expander("Definições oficiais", expanded=True):
+        st.markdown("""* **ACIDENTE:** Ocorrência com **lesão grave/fatal** ou **dano substancial** à aeronave.* **INCIDENTE GRAVE:** Ocorrência onde **um acidente quase ocorreu**.* **INCIDENTE:** Outra ocorrência que **afete ou possa afetar a segurança**.""", help="Baseado nas normas CENIPA/ICAO.")
 
-            * **ACIDENTE:**
-                * Ocorrência onde (a) **uma pessoa sofre lesão grave ou falece**, ou (b) **a aeronave sofre dano ou falha estrutural** que exija grande reparo.
-
-            * **INCIDENTE GRAVE:**
-                * Ocorrência em que **um acidente quase ocorreu**. A diferença está apenas nas **consequências** (que foram evitadas).
-                * *Ex: Quase colisão, pouso em pista fechada.*
-
-            * **INCIDENTE:**
-                * Ocorrência, que não seja um acidente, que **afete ou possa afetar a segurança** da operação.
-                * *Ex: Colisão com ave sem dano substancial.*
-            """,
-            help="Definições baseadas nas normas NSCA 3-6 e 3-13 do Comando da Aeronáutica e Anexo 13 da ICAO."
-        )
-
-# Gráfico 1: Série Temporal
-st.subheader("Estamos Melhorando ou Piorando?")
-st.markdown("A contagem de ocorrências (`ACIDENTE`, `INCIDENTE GRAVE`, `INCIDENTE`) ao longo do tempo.")
-
-# Agrupar por ano e classificação
-ocorrencias_ano = df_ocorrencia[df_ocorrencia['ocorrencia_ano'] >= 2007].groupby(
-    ['ocorrencia_ano', 'ocorrencia_classificacao']
-).size().reset_index(name='contagem')
-
-# Criar o gráfico de linha
+st.subheader("Tendência Temporal")
+ocorrencias_ano = df_ocorrencia[df_ocorrencia['ocorrencia_ano'] >= 2007].groupby(['ocorrencia_ano', 'ocorrencia_classificacao']).size().reset_index(name='contagem')
 chart_temporal = alt.Chart(ocorrencias_ano).mark_line(point=True).encode(
-    x=alt.X('ocorrencia_ano:O', title='Ano da Ocorrência'), # 'O' para Ordinal (ano)
-    y=alt.Y('contagem:Q', title='Número de Ocorrências'),
-    color=alt.Color('ocorrencia_classificacao', title='Classificação'),
-    tooltip=['ocorrencia_ano', 'ocorrencia_classificacao', 'contagem']
-).properties(
-    title='Ocorrências Aeronáuticas por Ano'
-).interactive()
+    x=alt.X('ocorrencia_ano:O', title='Ano'), y=alt.Y('contagem:Q', title='Nº de Ocorrências'),
+    color=alt.Color('ocorrencia_classificacao', title='Classificação'), tooltip=['ocorrencia_ano', 'ocorrencia_classificacao', 'contagem']
+).properties(title='Ocorrências por Ano').interactive()
 st.altair_chart(chart_temporal, use_container_width=True)
 st.markdown("---")
 
 # --- 4. SEÇÃO 2: ONDE ESTÁ O RISCO? (SEGMENTO, FASE E TIPO) ---
 st.header("Seção 2: Onde o Risco se Concentra?")
-st.markdown("""
-O público geral teme a aviação comercial (voos de linha aérea), mas será que é ela a principal fonte de risco? 
-Aqui, **focamos apenas em ACIDENTES** para entender onde o perigo é maior.
-""")
-
+st.markdown("Análise focada apenas em **ACIDENTES**.")
 col1, col2, col3 = st.columns(3)
-
-# --- Merge de ACIDENTES (usado em 2 gráficos) ---
-# 1. Juntar aeronave com ocorrencia para filtrar só acidentes
-df_aeronave_acidentes = pd.merge(
-    df_aeronave,
-    df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']],
-    left_on='codigo_ocorrencia2',
-    right_on='codigo_ocorrencia',
-    how='left' # Usar left join para manter todas as aeronaves
-)
-# 2. Filtrar apenas por ACIDENTE
-df_aeronave_acidentes = df_aeronave_acidentes[
-    df_aeronave_acidentes['ocorrencia_classificacao'] == 'ACIDENTE'
-]
+df_aeronave_ocorrencia_merged = pd.merge(df_aeronave, df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']], left_on='codigo_ocorrencia2', right_on='codigo_ocorrencia', how='inner')
+df_aeronave_acidentes = df_aeronave_ocorrencia_merged[df_aeronave_ocorrencia_merged['ocorrencia_classificacao'] == 'ACIDENTE'].copy()
 
 with col1:
     st.subheader("Risco por Segmento")
-    
-    # 3. Contar por segmento
-    segmento_data = df_aeronave_acidentes['aeronave_registro_segmento'].value_counts().nlargest(10).reset_index()
-    
+    segmento_data = df_aeronave_acidentes['aeronave_registro_segmento'].value_counts().nlargest(7).reset_index()
     chart_segmento = alt.Chart(segmento_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Acidentes'),
-        y=alt.Y('aeronave_registro_segmento', title='Segmento da Aviação', sort='-x'),
-        tooltip=['aeronave_registro_segmento', 'count']
-    ).properties(
-        title='Top 10 Segmentos por Nº de ACIDENTES'
-    ).interactive()
+        x=alt.X('count', title='Nº de Acidentes'), y=alt.Y('aeronave_registro_segmento', title='Segmento', sort='-x'), tooltip=['aeronave_registro_segmento', 'count']
+    ).properties(title='Segmentos com Mais ACIDENTES').interactive()
     st.altair_chart(chart_segmento, use_container_width=True)
-    st.info("💡 **Insight:** A aviação **PARTICULAR** e **AGRÍCOLA** somam a vasta maioria dos acidentes.")
-
+    st.info("💡 **Insight:** Aviação **PARTICULAR** e **AGRÍCOLA** lideram.")
 with col2:
     st.subheader("Risco por Fase do Voo")
-    
-    # Contar por fase de operação (usando o df_aeronave_acidentes que já filtramos)
     fase_data = df_aeronave_acidentes['aeronave_fase_operacao'].value_counts().nlargest(10).reset_index()
-    
     chart_fase = alt.Chart(fase_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Acidentes'),
-        y=alt.Y('aeronave_fase_operacao', title='Fase da Operação', sort='-x'),
-        tooltip=['aeronave_fase_operacao', 'count']
-    ).properties(
-        title='Top 10 Fases de Voo por Nº de ACIDENTES'
-    ).interactive()
+        x=alt.X('count', title='Nº de Acidentes'), y=alt.Y('aeronave_fase_operacao', title='Fase', sort='-x'), tooltip=['aeronave_fase_operacao', 'count']
+    ).properties(title='Fases com Mais ACIDENTES').interactive()
     st.altair_chart(chart_fase, use_container_width=True)
-    st.info("💡 **Insight:** **POUSO**, **DECOLAGEM** e **VOO A BAIXA ALTURA** são as fases mais críticas.")
-
+    st.info("💡 **Insight:** **POUSO**, **DECOLAGEM** e **CRUZEIRO** são as mais críticas.")
 with col3:
-    st.subheader("Tipos de Ocorrências")
-    
-    # Usar a tabela df_tipo (não precisa filtrar por acidente, é o tipo do evento em si)
-    tipo_data = df_tipo['ocorrencia_tipo'].value_counts().nlargest(10).reset_index()
-    
+    st.subheader("Tipos (em Acidentes)")
+    df_tipo_ocorrencia_merged = pd.merge(df_tipo, df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']], left_on='codigo_ocorrencia1', right_on='codigo_ocorrencia', how='inner')
+    df_tipo_acidentes = df_tipo_ocorrencia_merged[df_tipo_ocorrencia_merged['ocorrencia_classificacao'] == 'ACIDENTE']
+    tipo_data = df_tipo_acidentes['ocorrencia_tipo'].value_counts().nlargest(10).reset_index()
     chart_tipo = alt.Chart(tipo_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Ocorrências'),
-        y=alt.Y('ocorrencia_tipo', title='Tipo de Ocorrência', sort='-x'),
-        tooltip=['ocorrencia_tipo', 'count']
-    ).properties(
-        title='Top 10 Tipos de Ocorrências (Geral)'
-    ).interactive()
+        x=alt.X('count', title='Nº de Acidentes'), y=alt.Y('ocorrencia_tipo', title='Tipo', sort='-x'), tooltip=['ocorrencia_tipo', 'count']
+    ).properties(title='Tipos Mais Comuns (em ACIDENTES)').interactive()
     st.altair_chart(chart_tipo, use_container_width=True)
-    st.info("💡 **Insight:** 'FALHA DO MOTOR EM VOO' e 'PERDA DE CONTROLE EM VOO' são os eventos mais comuns.")
-
+    st.info("💡 **Insight:** 'PERDA DE CONTROLE', 'FALHA DO MOTOR' são frequentes.")
 st.markdown("---")
 
-
-# --- 5. SEÇÃO 3: ONDE O RISCO OCORRE? (GEOGRAFIA - COM GRÁFICO DE BARRAS) ---
+# --- 5. SEÇÃO 3: ONDE O RISCO OCORRE? (GEOGRAFIA - MAPA DE PONTOS E BARRAS) ---
+# --- INÍCIO DA ATUALIZAÇÃO (CORRIGINDO PROJEÇÃO) ---
 st.header("Seção 3: Onde o Risco Ocorre? (Análise Geográfica)")
-st.markdown("""
-Identificamos os segmentos e fases, mas *onde* no Brasil esses acidentes mais acontecem? 
-Focamos nos estados (UF) com maior número de **ACIDENTES**.
-""")
+st.markdown("Visualizamos a **dispersão** (mapa de pontos) e o **volume** (gráfico de barras) dos **ACIDENTES** por estado (UF).")
 
-# --- INÍCIO DA ATUALIZAÇÃO (VOLTANDO AO GRÁFICO DE BARRAS) ---
+col_mapa, col_barras_uf = st.columns(2)
 
-# 1. Preparar nossos dados: Filtrar ACIDENTES e contar por UF
-df_acidentes_geo = df_ocorrencia[df_ocorrencia['ocorrencia_classificacao'] == 'ACIDENTE']
-uf_data = df_acidentes_geo['ocorrencia_uf'].value_counts().nlargest(15).reset_index()
-uf_data.columns = ['ocorrencia_uf', 'contagem_acidentes'] # Renomear colunas para clareza
+with col_mapa:
+    st.subheader("Mapa de Dispersão dos Acidentes")
+    # Preparar os dados para os pontos
+    if all(col in df_ocorrencia.columns for col in ['latitude', 'longitude', 'ocorrencia_cidade', 'ocorrencia_uf', 'ocorrencia_dia', 'ocorrencia_classificacao']):
+        df_acidentes_mapa = df_ocorrencia[
+            df_ocorrencia['ocorrencia_classificacao'] == 'ACIDENTE'
+        ][['latitude', 'longitude', 'ocorrencia_cidade', 'ocorrencia_uf', 'ocorrencia_dia']].copy()
+        df_acidentes_mapa = df_acidentes_mapa.dropna(subset=['latitude', 'longitude'])
 
-# 2. Criar o Gráfico de Barras por UF
-chart_uf = alt.Chart(uf_data).mark_bar().encode(
-    x=alt.X('contagem_acidentes', title='Nº de Acidentes'),
-    y=alt.Y('ocorrencia_uf', title='Estado (UF)', sort='-x'), # Ordena do maior para o menor
-    tooltip=['ocorrencia_uf', 'contagem_acidentes']
-).properties(
-    title='Top 15 Estados por Nº de ACIDENTES'
-).interactive()
+        if df_acidentes_mapa.empty:
+            st.warning("Não há dados de acidentes com coordenadas válidas para exibir no mapa.")
+        else:
+            try:
+                # Carregar o GeoJSON para o mapa base
+                states_geojson_data = alt.Data(values=geojson_br, format=alt.DataFormat(type='json', property='features'))
 
-st.altair_chart(chart_uf, use_container_width=True)
+                # Criar o Mapa Base com projeção
+                base_map = alt.Chart(states_geojson_data).mark_geoshape(
+                    fill='#AAAAAA',
+                    stroke='white',
+                    strokeWidth=0.5
+                ).project( # Aplicar projeção diretamente aqui
+                     type='mercator',
+                     scale=550,
+                     center=[-54, -15]
+                )
+
+                # Criar a Camada de Pontos COM A MESMA projeção
+                points_layer = alt.Chart(df_acidentes_mapa).mark_circle(
+                    size=15,
+                    opacity=0.6
+                ).encode(
+                    longitude='longitude:Q',
+                    latitude='latitude:Q',
+                    color=alt.value('red'),
+                    tooltip=[
+                        alt.Tooltip('ocorrencia_cidade', title='Cidade'),
+                        alt.Tooltip('ocorrencia_uf', title='UF'),
+                        alt.Tooltip('ocorrencia_dia', title='Data', format='%d/%m/%Y')
+                    ]
+                ).project( # Aplicar a MESMA projeção diretamente aqui
+                    type='mercator',
+                    scale=550,
+                    center=[-54, -15]
+                )
+
+                # Combinar as camadas e exibir
+                final_map_points = (base_map + points_layer).properties(
+                    title='Localização Geográfica dos ACIDENTES',
+                    width=500 # Manter largura explícita
+                ).interactive()
+
+                st.altair_chart(final_map_points, use_container_width=False) # Manter False
+
+            except Exception as e:
+                st.error(f"Erro ao gerar o mapa de pontos: {e}")
+                st.write("Verificando os primeiros dados de coordenadas:")
+                st.dataframe(df_acidentes_mapa[['latitude', 'longitude']].head())
+
+
+    else:
+        st.error("Colunas necessárias para o mapa não encontradas no DataFrame 'df_ocorrencia'.")
+
+
+with col_barras_uf:
+    st.subheader("Volume de Acidentes por Estado")
+    # Preparar dados
+    df_acidentes_geo_bar = df_ocorrencia[df_ocorrencia['ocorrencia_classificacao'] == 'ACIDENTE']
+    if not df_acidentes_geo_bar.empty:
+        uf_data_bar = df_acidentes_geo_bar['ocorrencia_uf'].value_counts().nlargest(15).reset_index()
+        uf_data_bar.columns = ['ocorrencia_uf', 'contagem_acidentes']
+
+        # Criar o Gráfico de Barras por UF
+        chart_uf_bar = alt.Chart(uf_data_bar).mark_bar().encode(
+            y=alt.Y('ocorrencia_uf', title='Estado (UF)', sort='-x'),
+            x=alt.X('contagem_acidentes', title='Nº de Acidentes'),
+            tooltip=['ocorrencia_uf', 'contagem_acidentes']
+        ).properties(
+            title='Top 15 Estados por Nº de ACIDENTES'
+        ).interactive()
+        st.altair_chart(chart_uf_bar, use_container_width=True)
+    else:
+        st.warning("Não há dados de acidentes para gerar o gráfico de barras por UF.")
+
 st.info(
-    "💡 **Insight:** O risco não está concentrado apenas em estados com grande volume de voos (como SP), "
-    "mas também em estados com forte **Aviação Agrícola e Particular** (MT, GO, MS, RS), "
-    "reforçando os insights da Seção 2."
+    "💡 **Insight Combinado:** O mapa mostra a **dispersão** dos acidentes, concentrados no Centro-Oeste, Sudeste e Sul. "
+    "O gráfico de barras confirma o **volume**, destacando SP, MT, GO, MG e RS, reforçando a ligação com **Aviação Agrícola e Particular**."
 )
-st.markdown("*(Nota: Tentamos implementar um mapa de calor, mas enfrentamos problemas de renderização. O gráfico de barras acima transmite a informação essencial.)*")
-
 # --- FIM DA ATUALIZAÇÃO ---
 
 st.markdown("---")
@@ -290,107 +273,49 @@ st.markdown("---")
 
 # --- 6. SEÇÃO 4: A CAUSA RAIZ (MÁQUINA VS. HOMEM) ---
 st.header("Seção 4: A Causa Raiz - Máquina ou Homem?")
-st.markdown("""
-Esta é a revelação central da nossa história. Analisamos a tabela de **Fatores Contribuintes** para responder à nossa problemática inicial.
-""")
+st.markdown("Análise dos **Fatores Contribuintes** para entender a origem das ocorrências.")
+df_fator_ocorrencia = pd.merge(df_fator, df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']], left_on='codigo_ocorrencia3', right_on='codigo_ocorrencia', how='inner')
 
 col_fator1, col_fator2 = st.columns(2)
-
 with col_fator1:
-    st.subheader("Visão Geral dos Fatores Contribuintes")
-    
-    # Contar por 'fator_area'
-    fator_area_data = df_fator['fator_area'].value_counts().reset_index()
-    
+    st.subheader("Visão Geral dos Fatores")
+    fator_area_data = df_fator_ocorrencia['fator_area'].value_counts().reset_index()
     chart_area = alt.Chart(fator_area_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Menções'),
-        y=alt.Y('fator_area', title='Área do Fator', sort='-x'),
-        tooltip=['fator_area', 'count']
-    ).properties(
-        title='Causas Raízes das Ocorrências'
-    ).interactive()
+        x=alt.X('count', title='Nº de Menções'), y=alt.Y('fator_area', title='Área do Fator', sort='-x'), tooltip=['fator_area', 'count']
+    ).properties(title='Causas Raízes (Geral)').interactive()
     st.altair_chart(chart_area, use_container_width=True)
-
 with col_fator2:
     st.subheader("Zoom no 'Fator Humano'")
-    
-    # 1. Filtrar o DataFrame apenas por FATOR HUMANO
-    df_fator_humano = df_fator[df_fator['fator_area'] == 'FATOR HUMANO']
-    
-    # 2. Contar os fatores específicos
+    df_fator_humano = df_fator_ocorrencia[df_fator_ocorrencia['fator_area'] == 'FATOR HUMANO']
     fator_nome_data = df_fator_humano['fator_nome'].value_counts().nlargest(10).reset_index()
-    
     chart_fator_nome = alt.Chart(fator_nome_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Menções'),
-        y=alt.Y('fator_nome', title='Fator Específico', sort='-x'),
-        tooltip=['fator_nome', 'count']
-    ).properties(
-        title='Top 10 Fatores Humanos Contribuintes'
-    ).interactive()
+        x=alt.X('count', title='Nº de Menções'), y=alt.Y('fator_nome', title='Fator Específico', sort='-x'), tooltip=['fator_nome', 'count']
+    ).properties(title='Top 10 Fatores Humanos').interactive()
     st.altair_chart(chart_fator_nome, use_container_width=True)
-
-st.success(
-    "🎯 **A Resposta (O Clímax):** A análise é inequívoca. O **FATOR HUMANO** é, de longe, "
-    "a área mais contribuinte para ocorrências, superando 'Fator Material' (falha da máquina) "
-    "e 'Fator Operacional' (ambiente/infraestrutura). "
-    "Especificamente, **'JULGAMENTO DE PILOTAGEM'** e **'PROCESSO DECISÓRIO'** são os principais desafios, "
-    "indicando que as falhas são mais de decisão do que de habilidade técnica."
-)
+st.success("🎯 **A Resposta:** O **FATOR HUMANO** é o mais contribuinte, superando Falha Material e Fator Operacional. **'JULGAMENTO DE PILOTAGEM'** e **'PROCESSO DECISÓRIO'** são os principais desafios.")
 st.markdown("---")
 
 # --- 7. SEÇÃO 5: NOSSAS AÇÕES ESTÃO FUNCIONANDO? (RECOMENDAÇÕES) ---
 st.header("Seção 5: Nossas Ações Estão Funcionando? (Status das Recomendações)")
-st.markdown("""
-Investigar é o primeiro passo, mas agir é o que previne futuros acidentes. 
-Analisamos o status de todas as recomendações de segurança emitidas pelo CENIPA.
-""")
-
-# Contar por status
+st.markdown("Análise do status das recomendações de segurança emitidas pelo CENIPA.")
 recomendacao_data = df_recomendacao['recomendacao_status'].value_counts().nlargest(10).reset_index()
-
 chart_recomendacao = alt.Chart(recomendacao_data).mark_bar().encode(
-    x=alt.X('count', title='Nº de Recomendações'),
-    y=alt.Y('recomendacao_status', title='Status da Recomendação', sort='-x'),
-    tooltip=['recomendacao_status', 'count']
-).properties(
-    title='Status das Recomendações de Segurança Emitidas'
-).interactive()
-
+    x=alt.X('count', title='Nº de Recomendações'), y=alt.Y('recomendacao_status', title='Status', sort='-x'), tooltip=['recomendacao_status', 'count']
+).properties(title='Status das Recomendações Emitidas').interactive()
 st.altair_chart(chart_recomendacao, use_container_width=True)
-st.info(
-    "💡 **Insight:** A maioria das recomendações foi **'ADOTADA'** ou **'IMPLEMENTADA'**. "
-    "No entanto, existe um volume significativo de recomendações **'AGUARDANDO RESPOSTA'**, "
-    "indicando um possível gargalo no *feedback* das agências e operadores."
-)
+st.info("💡 **Insight:** Maioria **'ADOTADA'**/**'IMPLEMENTADA'**, mas volume **'AGUARDANDO RESPOSTA'** indica gargalo no feedback.")
 st.markdown("---")
-
 
 # --- 8. SEÇÃO 6: SOLUÇÕES E RECOMENDAÇÕES ---
 st.header("Seção 6: Soluções e Recomendações Estratégicas (Para a ANAC)")
-st.markdown("Com base em **toda** a história que os dados contaram, propomos as seguintes ações para aumentar a segurança da aviação:")
-
+st.markdown("Com base na análise, propomos as seguintes ações:")
 rec1, rec2, rec3 = st.columns(3)
-
 with rec1:
     st.subheader("1. 🎯 Foco na Fiscalização")
-    st.markdown(
-        "A **Aviação Geral (Particular e Agrícola)**, e não a comercial, representa o maior "
-        "foco de acidentes (Seção 2). A fiscalização e os programas de prevenção da ANAC "
-        "devem ter esse segmento e os **estados do Centro-Oeste (MT, GO)** como prioridade absoluta (Seção 3)."
-    )
-
+    st.markdown("Priorizar **Aviação Geral (Particular e Agrícola)** e os **estados do Centro-Oeste e Sudeste** (Seções 2 e 3).")
 with rec2:
     st.subheader("2. 🧠 Foco no Treinamento")
-    st.markdown(
-        "Os principais fatores humanos são **'Julgamento'** e **'Processo Decisório'** (Seção 4), "
-        "especialmente durante **'Pouso'** e **'Decolagem'** (Seção 2). "
-        "Recomendamos reforço em treinamentos de **CRM** (Gerenciamento de Recursos) e **ADM** (Tomada de Decisão Aeronáutica)."
-    )
-    
+    st.markdown("Reforçar **CRM** e **ADM**, especialmente para **Pouso** e **Decolagem** (Seções 2 e 4).")
 with rec3:
     st.subheader("3. ✈️ Foco no *Feedback*")
-    st.markdown(
-        "**'Falha do Motor em Voo'** é um evento crítico (Seção 2). Deve-se "
-        "reforçar a manutenção preventiva na aviação geral. Além disso, "
-        "é preciso cobrar o *feedback* das recomendações **'AGUARDANDO RESPOSTA'** (Seção 5) para fechar o ciclo de segurança."
-    )
+    st.markdown("Reforçar manutenção na aviação geral ('Falha de Motor', Seção 2) e cobrar **'AGUARDANDO RESPOSTA'** (Seção 5).")

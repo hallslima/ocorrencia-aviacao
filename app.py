@@ -3,7 +3,7 @@ import pandas as pd
 import altair as alt
 import json
 import re # Importar a biblioteca de expressões regulares
-
+import plotly.express as px
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
     page_title="Dashboard | Segurança de Voo CENIPA",
@@ -104,71 +104,214 @@ geojson_br = data_dict['geojson_br']
 
 # --- 3. SEÇÃO 1: TÍTULO E PANORAMA GERAL ---
 st.title("Decolando com Segurança: Onde Reside o Risco Aéreo no Brasil?")
-st.warning("**Problemática:** Onde está o maior risco na aviação civil? **Máquinas** ou **Fator Humano**?")
-st.header("Seção 1: Panorama Geral das Ocorrências")
-st.markdown("Contexto geral: volume e gravidade.")
+st.warning(
+    "**Problemática:** Onde realmente reside o real risco na aviação brasileira?"
+)
 
+st.header("Seção 1: O Panorama Geral das Ocorrências (2007-2025)")
+st.markdown("Primeiro, vamos entender o contexto. Quantas ocorrências temos e qual a gravidade delas?")
+
+# Calcular o novo KPI
 total_acidentes = df_ocorrencia[df_ocorrencia['ocorrencia_classificacao'] == 'ACIDENTE'].shape[0]
-kpi1, kpi2, kpi3 = st.columns(3)
-kpi1.metric("Total de Ocorrências (Geral)", f"{df_ocorrencia.shape[0]:,}", help="Soma de Acidentes, Incidentes Graves e Incidentes.")
-kpi2.metric("Total de ACIDENTES", f"{total_acidentes:,}", help="Ocorrências com dano substancial ou lesões graves/fatais.")
-kpi3.metric("Total de Fatalidades", f"{int(df_aeronave['aeronave_fatalidades_total'].sum()):,}", help="Fatalidades em todos os acidentes.")
 
+# KPIs da Seção 1 (Linha 1)
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric(
+    "Total de Ocorrências (Geral)",
+    f"{df_ocorrencia.shape[0]:,}",
+    help="Soma de todos os eventos: Acidentes, Incidentes Graves e Incidentes."
+)
+kpi2.metric(
+    "Total de ACIDENTES",
+    f"{total_acidentes:,}",
+    help="Ocorrências com dano substancial à aeronave ou lesões graves/fatais."
+)
+kpi3.metric(
+    "Total de Fatalidades",
+    f"{int(df_aeronave['aeronave_fatalidades_total'].sum()):,}",
+    help="Número total de fatalidades registradas em todos os acidentes."
+)
+
+# --- DEFINIÇÃO DO MAPA DE CORES (USADO NOS DOIS GRÁFICOS) ---
+domain_classificacao = ['ACIDENTE', 'INCIDENTE GRAVE', 'INCIDENTE']
+range_cores = ['#d62728', "#ffd30e", "#0c72e7"] # Vermelho, Laranja, Amarelo
+
+# Gráfico de Classificação e Definições (Linha 2)
 col_grafico, col_definicoes = st.columns(2)
+
 with col_grafico:
+    # Gráfico de BARRAS para Classificação
     classificacao_data = df_ocorrencia['ocorrencia_classificacao'].value_counts().reset_index()
     chart_classif = alt.Chart(classificacao_data).mark_bar().encode(
-        x=alt.X('ocorrencia_classificacao', title='Classificação', sort='-y'), y=alt.Y('count', title='Nº de Ocorrências'),
-        color=alt.Color('ocorrencia_classificacao', title="Classificação"), tooltip=['ocorrencia_classificacao', 'count']
-    ).properties(title="Ocorrências por Classificação")
+        x=alt.X('ocorrencia_classificacao', title='Classificação', sort='-y'),
+        y=alt.Y('count', title='Nº de Ocorrências'),
+        # --- APLICAÇÃO DO MAPA DE CORES (GRÁFICO 1) ---
+        color=alt.Color('ocorrencia_classificacao',
+                        title="Classificação",
+                        legend=None, # Legenda é redundante aqui
+                        scale=alt.Scale(domain=domain_classificacao, range=range_cores)),
+        tooltip=['ocorrencia_classificacao', 'count']
+    ).properties(
+        title="Ocorrências por Classificação"
+    )
     st.altair_chart(chart_classif, use_container_width=True)
+
 with col_definicoes:
     st.markdown("<br/>", unsafe_allow_html=True)
     with st.expander("Definições oficiais", expanded=True):
-        st.markdown("""* **ACIDENTE:** Ocorrência com **lesão grave/fatal** ou **dano substancial** à aeronave.* **INCIDENTE GRAVE:** Ocorrência onde **um acidente quase ocorreu**.* **INCIDENTE:** Outra ocorrência que **afete ou possa afetar a segurança**.""", help="Baseado nas normas CENIPA/ICAO.")
+        st.markdown("""* **ACIDENTE:** Ocorrência com **lesão grave/fatal** ou **dano substancial** à aeronave. 
+                    \n\n* **INCIDENTE GRAVE:** Ocorrência onde **um acidente quase ocorreu**. 
+                    \n\n* **INCIDENTE:** Outra ocorrência que **afete ou possa afetar a segurança**.""", help="Baseado nas normas CENIPA/ICAO.")
 
-st.subheader("Tendência Temporal")
-ocorrencias_ano = df_ocorrencia[df_ocorrencia['ocorrencia_ano'] >= 2007].groupby(['ocorrencia_ano', 'ocorrencia_classificacao']).size().reset_index(name='contagem')
+# Gráfico 2: Série Temporal
+st.subheader("Estamos Melhorando ou Piorando?")
+st.markdown("A contagem de ocorrências (`ACIDENTE`, `INCIDENTE GRAVE`, `INCIDENTE`) ao longo do tempo.")
+
+# Agrupar por ano e classificação
+ocorrencias_ano = df_ocorrencia[df_ocorrencia['ocorrencia_ano'] >= 2007].groupby(
+    ['ocorrencia_ano', 'ocorrencia_classificacao']
+).size().reset_index(name='contagem')
+
+# Criar o gráfico de linha
 chart_temporal = alt.Chart(ocorrencias_ano).mark_line(point=True).encode(
-    x=alt.X('ocorrencia_ano:O', title='Ano'), y=alt.Y('contagem:Q', title='Nº de Ocorrências'),
-    color=alt.Color('ocorrencia_classificacao', title='Classificação'), tooltip=['ocorrencia_ano', 'ocorrencia_classificacao', 'contagem']
-).properties(title='Ocorrências por Ano').interactive()
+    x=alt.X('ocorrencia_ano:O', title='Ano da Ocorrência'),
+    y=alt.Y('contagem:Q', title='Número de Ocorrências'),
+    # --- APLICAÇÃO DO MAPA DE CORES (GRÁFICO 2) ---
+    color=alt.Color('ocorrencia_classificacao',
+                    title='Classificação',
+                    scale=alt.Scale(domain=domain_classificacao, range=range_cores)),
+    tooltip=['ocorrencia_ano', 'ocorrencia_classificacao', 'contagem']
+).properties(
+    title='Ocorrências Aeronáuticas por Ano'
+).interactive()
 st.altair_chart(chart_temporal, use_container_width=True)
 st.markdown("---")
 
 # --- 4. SEÇÃO 2: ONDE ESTÁ O RISCO? (SEGMENTO, FASE E TIPO) ---
 st.header("Seção 2: Onde o Risco se Concentra?")
-st.markdown("Análise focada apenas em **ACIDENTES**.")
+st.markdown("""
+O público geral teme a aviação comercial (voos de linha aérea), mas será que é ela a principal fonte de risco? 
+Aqui, **focamos apenas em ACIDENTES** para entender onde o perigo é maior.
+""")
+
 col1, col2, col3 = st.columns(3)
-df_aeronave_ocorrencia_merged = pd.merge(df_aeronave, df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']], left_on='codigo_ocorrencia2', right_on='codigo_ocorrencia', how='inner')
-df_aeronave_acidentes = df_aeronave_ocorrencia_merged[df_aeronave_ocorrencia_merged['ocorrencia_classificacao'] == 'ACIDENTE'].copy()
+
+# --- Merge de ACIDENTES (usado em 2 gráficos) ---
+# 1. Juntar aeronave com ocorrencia para filtrar só acidentes
+df_aeronave_acidentes = pd.merge(
+    df_aeronave,
+    df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']],
+    left_on='codigo_ocorrencia2',
+    right_on='codigo_ocorrencia',
+    how='left' # Usar left join para manter todas as aeronaves
+)
+# 2. Filtrar apenas por ACIDENTE
+df_aeronave_acidentes = df_aeronave_acidentes[
+    df_aeronave_acidentes['ocorrencia_classificacao'] == 'ACIDENTE'
+]
 
 with col1:
+
     st.subheader("Risco por Segmento")
-    segmento_data = df_aeronave_acidentes['aeronave_registro_segmento'].value_counts().nlargest(7).reset_index()
+
+   
+
+    # 3. Contar por segmento
+
+    segmento_data = df_aeronave_acidentes['aeronave_registro_segmento'].value_counts().nlargest(10).reset_index()
+
+   
+
     chart_segmento = alt.Chart(segmento_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Acidentes'), y=alt.Y('aeronave_registro_segmento', title='Segmento', sort='-x'), tooltip=['aeronave_registro_segmento', 'count']
-    ).properties(title='Segmentos com Mais ACIDENTES').interactive()
+
+        x=alt.X('count', title='Nº de Acidentes'),
+
+        y=alt.Y('aeronave_registro_segmento', title='Segmento da Aviação', sort='-x'),
+
+        tooltip=['aeronave_registro_segmento', 'count']
+
+    ).properties(
+
+        title='Top 10 Segmentos por Nº de ACIDENTES'
+
+    ).interactive()
+
     st.altair_chart(chart_segmento, use_container_width=True)
-    st.info("💡 **Insight:** Aviação **PARTICULAR** e **AGRÍCOLA** lideram.")
+
+    st.info("💡 **Insight:** Aviação **PARTICULAR** lidera com mais que o drobro de incidentes do 2º colocado (possíveis fatores: número de vôos e regulação mais branda que a comercial).")
+
 with col2:
     st.subheader("Risco por Fase do Voo")
+    
+    # Contar por fase de operação (usando o df_aeronave_acidentes que já filtramos)
     fase_data = df_aeronave_acidentes['aeronave_fase_operacao'].value_counts().nlargest(10).reset_index()
-    chart_fase = alt.Chart(fase_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Acidentes'), y=alt.Y('aeronave_fase_operacao', title='Fase', sort='-x'), tooltip=['aeronave_fase_operacao', 'count']
-    ).properties(title='Fases com Mais ACIDENTES').interactive()
+    
+    # --- GRÁFICO DE PIRULITO (Lollipop Chart) ---
+    # Gráfico base
+    base_fase = alt.Chart(fase_data).encode(
+        y=alt.Y('aeronave_fase_operacao', title='Fase da Operação', sort='-x'),
+        x=alt.X('count', title='Nº de Acidentes'),
+        tooltip=['aeronave_fase_operacao', 'count']
+    )
+    # Linha
+    line_fase = base_fase.mark_rule(color='lightgray').encode(size=alt.value(2))
+    # Ponto
+    point_fase = base_fase.mark_point(filled=True, size=100, color='red')
+    # Combina os gráficos
+    chart_fase = (line_fase + point_fase).properties(
+        title='Top 10 Fases de Voo por Nº de ACIDENTES'
+    ).interactive()
+    
     st.altair_chart(chart_fase, use_container_width=True)
-    st.info("💡 **Insight:** **POUSO**, **DECOLAGEM** e **CRUZEIRO** são as mais críticas.")
+    st.info("💡 **Insight:** **DECOLAGEM**, **POUSO** e **CRUZEIRO** são as mais críticas.")
+
 with col3:
-    st.subheader("Tipos (em Acidentes)")
-    df_tipo_ocorrencia_merged = pd.merge(df_tipo, df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']], left_on='codigo_ocorrencia1', right_on='codigo_ocorrencia', how='inner')
-    df_tipo_acidentes = df_tipo_ocorrencia_merged[df_tipo_ocorrencia_merged['ocorrencia_classificacao'] == 'ACIDENTE']
+    st.subheader("Tipos de Ocorrências em Acidentes")
+
+    # --- CÓDIGO CORRIGIDO ---
+    # Agora usamos o nome correto da coluna de df_tipo, que é 'codigo_ocorrencia1'.
+    df_tipo_com_classificacao = pd.merge(
+        df_tipo,
+        df_ocorrencia[['codigo_ocorrencia', 'ocorrencia_classificacao']],
+        left_on='codigo_ocorrencia1',  # A CHAVE CORRETA!
+        right_on='codigo_ocorrencia',
+        how='left'
+    )
+
+    # 2. Filtrar o dataframe resultante para manter apenas os ACIDENTES.
+    df_tipo_acidentes = df_tipo_com_classificacao[
+        df_tipo_com_classificacao['ocorrencia_classificacao'] == 'ACIDENTE'
+    ]
+
+    # 3. Contar os tipos de ocorrência a partir do dataframe JÁ FILTRADO.
     tipo_data = df_tipo_acidentes['ocorrencia_tipo'].value_counts().nlargest(10).reset_index()
-    chart_tipo = alt.Chart(tipo_data).mark_bar().encode(
-        x=alt.X('count', title='Nº de Acidentes'), y=alt.Y('ocorrencia_tipo', title='Tipo', sort='-x'), tooltip=['ocorrencia_tipo', 'count']
-    ).properties(title='Tipos Mais Comuns (em ACIDENTES)').interactive()
-    st.altair_chart(chart_tipo, use_container_width=True)
-    st.info("💡 **Insight:** 'PERDA DE CONTROLE', 'FALHA DO MOTOR' são frequentes.")
+
+    # Renomear colunas para o Plotly
+    tipo_data.columns = ['tipo', 'contagem']
+
+    # --- GRÁFICO DE TREEMAP com PLOTLY ---
+    fig_treemap = px.treemap(
+        tipo_data,
+        path=['tipo'],
+        values='contagem',
+        title='Top 10 Tipos de ACIDENTES',
+        color_discrete_sequence=px.colors.qualitative.Pastel
+    )
+
+    # Melhora a aparência dos rótulos
+    fig_treemap.update_traces(
+        textinfo='label+percent root',
+        insidetextfont=dict(size=14)
+    )
+
+    # Ajusta as margens para o título não ficar cortado
+    fig_treemap.update_layout(margin = dict(t=50, l=25, r=25, b=25))
+
+    # Usa st.plotly_chart para exibir o gráfico
+    st.plotly_chart(fig_treemap, use_container_width=True)
+
+    st.info("💡 **Insight:** **PERDA DE CONTROLE**, **FALHA DO MOTOR** são frequentes.")
+
 st.markdown("---")
 
 # --- 5. SEÇÃO 3: ONDE O RISCO OCORRE? (GEOGRAFIA - MAPA DE PONTOS E BARRAS) ---
@@ -264,7 +407,7 @@ with col_barras_uf:
 
 st.info(
     "💡 **Insight Combinado:** O mapa mostra a **dispersão** dos acidentes, concentrados no Centro-Oeste, Sudeste e Sul. "
-    "O gráfico de barras confirma o **volume**, destacando SP, MT, GO, MG e RS, reforçando a ligação com **Aviação Agrícola e Particular**."
+    "O gráfico de barras confirma o **volume**, destacando SP, MT, RS, PR e MG."
 )
 # --- FIM DA ATUALIZAÇÃO ---
 
@@ -285,25 +428,61 @@ with col_fator1:
     ).properties(title='Causas Raízes (Geral)').interactive()
     st.altair_chart(chart_area, use_container_width=True)
 with col_fator2:
-    st.subheader("Zoom no 'Fator Humano'")
-    df_fator_humano = df_fator_ocorrencia[df_fator_ocorrencia['fator_area'] == 'FATOR HUMANO']
-    fator_nome_data = df_fator_humano['fator_nome'].value_counts().nlargest(10).reset_index()
+    st.subheader("Zoom no 'Fator Operacional'")
+    df_fator_operacional = df_fator_ocorrencia[df_fator_ocorrencia['fator_area'] == 'FATOR OPERACIONAL']
+    fator_nome_data = df_fator_operacional['fator_nome'].value_counts().nlargest(10).reset_index()
     chart_fator_nome = alt.Chart(fator_nome_data).mark_bar().encode(
         x=alt.X('count', title='Nº de Menções'), y=alt.Y('fator_nome', title='Fator Específico', sort='-x'), tooltip=['fator_nome', 'count']
     ).properties(title='Top 10 Fatores Humanos').interactive()
     st.altair_chart(chart_fator_nome, use_container_width=True)
-st.success("🎯 **A Resposta:** O **FATOR HUMANO** é o mais contribuinte, superando Falha Material e Fator Operacional. **'JULGAMENTO DE PILOTAGEM'** e **'PROCESSO DECISÓRIO'** são os principais desafios.")
+st.success("🎯 **A Resposta:** O **FATOR OPERACIONAL** é o mais contribuinte, superando Fator Humano e Falha Material. **JULGAMENTO DE PILOTAGEM** e **APLICAÇÃO DE COMANDOS** são os principais desafios.")
 st.markdown("---")
 
-# --- 7. SEÇÃO 5: NOSSAS AÇÕES ESTÃO FUNCIONANDO? (RECOMENDAÇÕES) ---
+# --- 7. SEÇÃO 5: NOSSAS AÇÕES ESTÃO FUNCIONANDO? (STATUS DAS RECOMENDAÇÕES) ---
 st.header("Seção 5: Nossas Ações Estão Funcionando? (Status das Recomendações)")
-st.markdown("Análise do status das recomendações de segurança emitidas pelo CENIPA.")
-recomendacao_data = df_recomendacao['recomendacao_status'].value_counts().nlargest(10).reset_index()
-chart_recomendacao = alt.Chart(recomendacao_data).mark_bar().encode(
-    x=alt.X('count', title='Nº de Recomendações'), y=alt.Y('recomendacao_status', title='Status', sort='-x'), tooltip=['recomendacao_status', 'count']
-).properties(title='Status das Recomendações Emitidas').interactive()
-st.altair_chart(chart_recomendacao, use_container_width=True)
-st.info("💡 **Insight:** Maioria **'ADOTADA'**/**'IMPLEMENTADA'**, mas volume **'AGUARDANDO RESPOSTA'** indica gargalo no feedback.")
+st.markdown("""
+Investigar é o primeiro passo, mas agir é o que previne futuros acidentes. Analisamos o status de todas as recomendações de segurança emitidas pelo CENIPA para avaliar sua eficácia.
+""")
+
+st.subheader("Proporção do Status de Adoção das Recomendações (Treemap)")
+
+# --- PREPARAÇÃO DOS DADOS ---
+recomendacao_data = df_recomendacao['recomendacao_status'].value_counts().reset_index()
+recomendacao_data.columns = ['status', 'contagem'] # Renomear colunas para clareza no Plotly
+
+# --- GRÁFICO DE TREEMAP COM PLOTLY EXPRESS ---
+fig_treemap_recomendacao = px.treemap(
+    recomendacao_data,
+    path=['status'], # Cria uma hierarquia simples
+    values='contagem',
+    title='Status de Adoção das Recomendações (CENIPA)',
+    color='status', # Colore os retângulos com base no status
+    color_discrete_map={
+        # Mapeamento de cores semânticas para corresponder ao que você já tinha
+        'ADOTADA': '#2ca02c',                 # Verde
+        'NÃO ADOTADA': '#d62728',             # Vermelho
+        'INDETERMINADO': '#7f7f7f',           # Cinza
+        'ADOTADA DE FORMA ALTERNATIVA': '#1f77b4', # Azul
+        'AGUARDANDO RESPOSTA': "#b9b732"      # Amarelo/Mostarda
+    },
+    hover_data={'contagem': True, 'status': True} # Informações extras ao passar o mouse
+)
+
+# Melhorar a aparência dos rótulos e layout
+fig_treemap_recomendacao.update_traces(
+    textinfo='label+percent entry', # Mostra rótulo e porcentagem
+    insidetextfont=dict(size=14, color='white') # Cor e tamanho da fonte interna
+)
+
+fig_treemap_recomendacao.update_layout(
+    margin=dict(t=50, l=25, r=25, b=25), # Ajusta as margens
+    # centraliza o título
+    title_x=0.5
+)
+
+st.plotly_chart(fig_treemap_recomendacao, use_container_width=True)
+
+st.info("💡 **Insight:** A maioria das recomendações foi **'ADOTADA'**, porém o volume de **'INDETERMINADO'** indica gargalo no feedback. O Treemap destaca visualmente a proporção de cada status.")
 st.markdown("---")
 
 # --- 8. SEÇÃO 6: SOLUÇÕES E RECOMENDAÇÕES ---
